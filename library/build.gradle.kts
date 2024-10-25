@@ -8,7 +8,7 @@ plugins {
     kotlin("multiplatform")
     id("org.jetbrains.dokka")
     id("com.vanniktech.maven.publish")
-    kotlin("plugin.serialization") version "1.9.22"
+    kotlin("plugin.serialization") version "2.0.21"
 }
 
 kotlin {
@@ -27,6 +27,11 @@ kotlin {
     linuxArm64()
     mingwX64()
 
+    js(IR) {
+        browser()
+        binaries.executable()
+    }
+
     @OptIn(ExperimentalWasmDsl::class)
     wasmJs {
         browser()
@@ -39,8 +44,8 @@ kotlin {
 
         val commonMain by getting {
             dependencies {
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
                 implementation("io.ktor:ktor-client-core:$ktor_version")
                 implementation("io.ktor:ktor-client-content-negotiation:$ktor_version")
@@ -71,6 +76,12 @@ kotlin {
                 implementation("io.ktor:ktor-client-winhttp:$ktor_version")
             }
         }
+
+        val jsMain by getting {
+            dependencies {
+                implementation("io.ktor:ktor-client-js:$ktor_version")
+            }
+        }
     }
 }
 
@@ -83,7 +94,7 @@ android {
 }
 
 mavenPublishing {
-    coordinates("dev.toastbits.ytmkt", "ytmkt", "0.3.3")
+    coordinates("dev.toastbits.ytmkt", "ytmkt", "0.3.3-dev")
 
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
     signAllPublications()

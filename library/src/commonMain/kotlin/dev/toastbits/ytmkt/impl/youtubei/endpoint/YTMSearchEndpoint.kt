@@ -1,41 +1,55 @@
 package dev.toastbits.ytmkt.impl.youtubei.endpoint
 
-import dev.toastbits.ytmkt.model.external.mediaitem.MediaItemLayout
-import dev.toastbits.ytmkt.model.external.mediaitem.YtmPlaylist
-import dev.toastbits.ytmkt.model.external.mediaitem.YtmSong
-import dev.toastbits.ytmkt.model.external.mediaitem.YtmArtist
-import dev.toastbits.ytmkt.uistrings.YoutubeUiString
 import dev.toastbits.ytmkt.endpoint.SearchEndpoint
 import dev.toastbits.ytmkt.endpoint.SearchFilter
 import dev.toastbits.ytmkt.endpoint.SearchResults
 import dev.toastbits.ytmkt.endpoint.SearchType
 import dev.toastbits.ytmkt.impl.youtubei.YoutubeiApi
 import dev.toastbits.ytmkt.impl.youtubei.YoutubeiPostBody
+import dev.toastbits.ytmkt.impl.youtubei.YoutubeiRequestData
 import dev.toastbits.ytmkt.model.external.ItemLayoutType
+import dev.toastbits.ytmkt.model.external.mediaitem.MediaItemLayout
+import dev.toastbits.ytmkt.model.external.mediaitem.YtmArtist
+import dev.toastbits.ytmkt.model.external.mediaitem.YtmPlaylist
+import dev.toastbits.ytmkt.model.external.mediaitem.YtmSong
+import dev.toastbits.ytmkt.model.internal.DidYouMeanRenderer
+import dev.toastbits.ytmkt.model.internal.ItemSectionRenderer
 import dev.toastbits.ytmkt.model.internal.MusicCardShelfRenderer
 import dev.toastbits.ytmkt.model.internal.NavigationEndpoint
 import dev.toastbits.ytmkt.model.internal.TextRuns
 import dev.toastbits.ytmkt.model.internal.YoutubeiShelf
-import dev.toastbits.ytmkt.model.internal.ItemSectionRenderer
-import dev.toastbits.ytmkt.model.internal.DidYouMeanRenderer
+import dev.toastbits.ytmkt.uistrings.YoutubeUiString
 import io.ktor.client.call.body
 import io.ktor.client.request.request
 import io.ktor.client.statement.HttpResponse
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.put
 
-open class YTMSearchEndpoint(override val api: YoutubeiApi): SearchEndpoint() {
+open class YTMSearchEndpoint(override val api: YoutubeiApi) : SearchEndpoint() {
+
+    override suspend fun searchISRC(
+        isrc: String,
+        params: String?,
+        non_music: Boolean
+    ): Result<SearchResults> {
+        return search(isrc, params, non_music, YoutubeiRequestData.getYtmContext("de-BE"))
+    }
+
     override suspend fun search(
         query: String,
         params: String?,
-        non_music: Boolean
+        non_music: Boolean,
+        postBody: JsonObject?
     ): Result<SearchResults> = runCatching {
         val hl: String = api.data_language
         val response: HttpResponse = api.client.request {
             endpointPath("search", non_music_api = non_music)
             addApiHeadersWithAuthenticated(non_music_api = non_music)
             postWithBody(
-                (if (non_music) YoutubeiPostBody.WEB else YoutubeiPostBody.DEFAULT).getPostBody(api)
+                postBody
+                    ?: (if (non_music) YoutubeiPostBody.WEB else YoutubeiPostBody.DEFAULT)
+                        .getPostBody(api)
             ) {
                 put("query", query)
                 put("params", params)
@@ -44,41 +58,46 @@ open class YTMSearchEndpoint(override val api: YoutubeiApi): SearchEndpoint() {
 
         val parsed: YoutubeiSearchResponse = response.body()
 
-        val section_list_renderers: List<SectionListRenderer> = parsed.contents.getSectionListRenderers() ?: emptyList()
+        val section_list_renderers: List<SectionListRenderer> =
+            parsed.contents.getSectionListRenderers() ?: emptyList()
 
         var correction_suggestion: String? = null
 
         val categories: List<YoutubeiShelf> =
             section_list_renderers.flatMap { renderer ->
                 renderer.contents.orEmpty().filter { shelf ->
-                    val did_you_mean_renderer: DidYouMeanRenderer? = shelf.itemSectionRenderer?.contents?.firstOrNull()?.didYouMeanRenderer
+                    val did_you_mean_renderer: DidYouMeanRenderer? =
+                        shelf.itemSectionRenderer?.contents?.firstOrNull()?.didYouMeanRenderer
 
                     if (did_you_mean_renderer != null) {
                         correction_suggestion = did_you_mean_renderer.correctedQuery.first_text
                         return@filter false
-                    }
-                    else {
+                    } else {
                         return@filter true
                     }
                 }
             }
 
         val category_layouts: MutableList<Pair<MediaItemLayout, SearchFilter?>> = mutableListOf()
-        val chips = section_list_renderers.flatMap { it.header?.chipCloudRenderer?.chips ?: emptyList() }
+        val chips =
+            section_list_renderers.flatMap { it.header?.chipCloudRenderer?.chips ?: emptyList() }
 
         for ((index, category) in categories.withIndex()) {
             val card: MusicCardShelfRenderer? = category.musicCardShelfRenderer
-            val key: String? = card?.header?.musicCardShelfHeaderBasicRenderer?.title?.firstTextOrNull()
+            val key: String? =
+                card?.header?.musicCardShelfHeaderBasicRenderer?.title?.firstTextOrNull()
             if (key != null) {
-                category_layouts.add(Pair(
-                    MediaItemLayout(
-                        mutableListOf(card.getMediaItem()),
-                        YoutubeUiString.Type.SEARCH_PAGE.createFromKey(key, hl),
-                        null,
-                        type = ItemLayoutType.CARD
-                    ),
-                    null
-                ))
+                category_layouts.add(
+                    Pair(
+                        MediaItemLayout(
+                            mutableListOf(card.getMediaItem()),
+                            YoutubeUiString.Type.SEARCH_PAGE.createFromKey(key, hl),
+                            null,
+                            type = ItemLayoutType.CARD
+                        ),
+                        null
+                    )
+                )
                 continue
             }
 
@@ -90,14 +109,22 @@ open class YTMSearchEndpoint(override val api: YoutubeiApi): SearchEndpoint() {
                 continue
             }
 
-            val shelf: YTMGetSongFeedEndpoint.MusicShelfRenderer = category.musicShelfRenderer ?: continue
-            val items = shelf.contents?.mapNotNull { it.toMediaItemData(hl, api)?.first }?.toMutableList() ?: continue
-            val search_params = if (index == 0) null else chips.getOrNull(index - 1)?.chipCloudChipRenderer?.navigationEndpoint?.searchEndpoint?.params
+            val shelf: YTMGetSongFeedEndpoint.MusicShelfRenderer =
+                category.musicShelfRenderer ?: continue
+            val items =
+                shelf.contents?.mapNotNull { it.toMediaItemData(hl, api)?.first }?.toMutableList()
+                    ?: continue
+            val search_params =
+                if (index == 0) null else chips.getOrNull(index - 1)?.chipCloudChipRenderer?.navigationEndpoint?.searchEndpoint?.params
 
             val title: String? = shelf.title?.firstTextOrNull()
             if (title != null) {
                 category_layouts.add(Pair(
-                    MediaItemLayout(items, YoutubeUiString.Type.SEARCH_PAGE.createFromKey(title, hl), null),
+                    MediaItemLayout(
+                        items,
+                        YoutubeUiString.Type.SEARCH_PAGE.createFromKey(title, hl),
+                        null
+                    ),
                     search_params?.let {
                         val item = items.firstOrNull() ?: return@let null
                         SearchFilter(
@@ -136,16 +163,20 @@ private data class YoutubeiSearchResponse(
     val contents: Contents
 ) {
     @Serializable
-    data class Contents(val tabbedSearchResultsRenderer: TabbedSearchResultsRenderer?, val twoColumnSearchResultsRenderer: TwoColumnSearchResultsRenderer?) {
+    data class Contents(
+        val tabbedSearchResultsRenderer: TabbedSearchResultsRenderer?,
+        val twoColumnSearchResultsRenderer: TwoColumnSearchResultsRenderer?
+    ) {
         fun getSectionListRenderers(): List<SectionListRenderer>? =
             tabbedSearchResultsRenderer?.tabs?.mapNotNull { it.tabRenderer.content?.sectionListRenderer }
-            ?: twoColumnSearchResultsRenderer?.primaryContents?.let { listOf(it.sectionListRenderer) }
+                ?: twoColumnSearchResultsRenderer?.primaryContents?.let { listOf(it.sectionListRenderer) }
     }
 
     @Serializable
     data class TabbedSearchResultsRenderer(val tabs: List<Tab>) {
         @Serializable
         data class Tab(val tabRenderer: TabRenderer)
+
         @Serializable
         data class TabRenderer(val content: Content?)
     }
@@ -165,9 +196,12 @@ data class SectionListRenderer(
 
 @Serializable
 data class ChipCloudRendererHeader(val chipCloudRenderer: ChipCloudRenderer?)
+
 @Serializable
 data class ChipCloudRenderer(val chips: List<Chip>)
+
 @Serializable
 data class Chip(val chipCloudChipRenderer: ChipCloudChipRenderer)
+
 @Serializable
 data class ChipCloudChipRenderer(val navigationEndpoint: NavigationEndpoint, val text: TextRuns?)
